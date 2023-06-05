@@ -1,9 +1,10 @@
-use std::env;
-use std::ffi::OsStr;
-use std::path::{Component, PathBuf};
+#![feature(iter_intersperse)]
+
+use std::{env};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
-const SYMBOLS: &str = "⌘ⵞⵘⵙⴲⴵⵥꙮ◬✡⚛☸❀❁ꔮ❃ꕤꖛꖜꗝ";
+// const SYMBOLS: &str = "⌘ⵞⵘⵙⴲⴵⵥꙮ◬✡⚛☸❀❁ꔮ❃ꕤꖛꖜꗝ";
 
 fn home_path() -> Option<PathBuf> {
     env::var("HOME")
@@ -24,8 +25,94 @@ fn current_branch() -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
+#[derive(Eq, PartialEq, Clone, Debug)]
+enum CWDPathPart {
+    RootDir,
+    HomeDir,
+    Ellipsis,
+    Normal(String),
+}
+
+struct CWDPath {
+    parts: Vec<CWDPathPart>,
+}
+
+impl<T: AsRef<Path>> From<T> for CWDPath {
+    fn from(path: T) -> Self {
+        let path = path.as_ref();
+        let parts = path.components()
+            .map(|comp| match comp {
+                Component::RootDir => CWDPathPart::RootDir,
+                Component::Normal(s) =>
+                    CWDPathPart::Normal(s.to_str().expect("non-utf8 name in path").to_string()),
+                other => panic!("unexpected {other:?} in path"),
+            })
+            .collect();
+        Self { parts }
+    }
+}
+
+impl CWDPath {
+    #[must_use]
+    fn strip_prefix(&mut self, prefix: &Self) -> bool {
+        match self.parts.strip_prefix(prefix.parts.as_slice()) {
+            None => false,
+            Some(rest) => {
+                self.parts = rest.to_vec();
+                true
+            }
+        }
+    }
+
+    fn strip_home(&mut self) {
+        let home = Self::from(&home_path().expect("failed to get home path"));
+        if self.strip_prefix(&home) {
+            self.parts.insert(0, CWDPathPart::HomeDir);
+        }
+    }
+
+    // always keeps / or ~ at the beginning and the last part of the path
+    // plus, `additional`-many single-letter parts
+    fn shorten(&mut self, mut additional: usize) {
+        let mut new_parts = vec![self.parts.remove(0)];
+        let last = self.parts.pop();
+        if self.parts.len() == 1 {
+            additional = 1;
+        }
+        if self.parts.len() > additional {
+            new_parts.push(CWDPathPart::Ellipsis);
+        }
+        if !self.parts.is_empty() {
+            new_parts.extend(self.parts[self.parts.len() - additional..].iter()
+                .map(|part| match part {
+                    CWDPathPart::Normal(s) => CWDPathPart::Normal(
+                        s.chars().next().expect("empty name in path").to_string()),
+                    other => other.clone(),
+                }));
+        }
+        new_parts.extend(last);
+        self.parts = new_parts;
+    }
+}
+
 fn fish_print(string: &str, color: &str) {
     print!("set_color \"{}\";printf \"{}\";", color, string);
+}
+
+fn fish_print_path(path: &CWDPath) {
+    if path.parts.len() == 1 && path.parts[0] == CWDPathPart::RootDir {
+        print!("set_color \"normal\";printf \"/\";");
+    } else {
+        path.parts.iter()
+            .flat_map(|part| match part {
+                CWDPathPart::RootDir => Some("".to_string()),
+                CWDPathPart::HomeDir => Some("set_color \"red\";printf \"~\";".to_string()),
+                CWDPathPart::Ellipsis => Some("set_color \"#444\"; printf \"⋯\";".to_string()),
+                CWDPathPart::Normal(s) => Some(format!("set_color green; printf \"{}\";", s)),
+            })
+            .intersperse_with(|| "set_color \"normal\";printf \"/\";".to_string())
+            .for_each(|s| print!("{}", s));
+    }
 }
 
 fn fish_done() {
@@ -33,65 +120,35 @@ fn fish_done() {
 }
 
 fn main() {
-    let path = env::current_dir().expect("failed to get current path");
-    let home = home_path().expect("failed to get home path");
+    let mut path = CWDPath::from(
+        env::current_dir().expect("failed to get current path"));
 
-    let (path, path_stripped) = match path.strip_prefix(&home) {
-        Ok(stripped) => (PathBuf::from(stripped), true),
-        Err(_) => (path, false),
-    };
-
-    let parts: Vec<_> = path.components().collect();
-    let mut new_path: PathBuf = if parts.len() >= 3 {
-        [Component::Normal(OsStr::new("⋯")), *parts.last().unwrap()]
-            .into_iter()
-            .collect()
-    } else {
-        parts
-            .iter()
-            .copied()
-            .take(parts.len() - 1)
-            .map(|p| match p {
-                Component::Normal(s) => Component::Normal(OsStr::new(s
-                    .to_str()
-                    .expect("non-utf8 name in path")
-                    .get(0..=0)
-                    .expect("empty name in path"))),
-                other => other,
-            })
-            .chain(parts.last().copied())
-            .collect()
-    };
-
-    if path_stripped {
-        if new_path.as_os_str().len() > 0 {
-            new_path = PathBuf::from("~").join(new_path);
-        } else {
-            new_path = PathBuf::from("~");
-        }
-    }
+    path.strip_home();
+    path.shorten(1);
 
     let branch = current_branch();
 
-    let symbol_idx = 0;
-    let _symbol = SYMBOLS
-        .chars()
-        .nth(symbol_idx)
-        .unwrap()
-        .to_string();
+    // let symbol_idx = 0;
+    // let _symbol = SYMBOLS
+    //     .chars()
+    //     .nth(symbol_idx)
+    //     .unwrap()
+    //     .to_string();
 
-    let new_path_str = new_path.as_os_str().to_str().expect("corrupted path");
+    // let new_path_str = new_path.as_os_str().to_str().expect("corrupted path");
 
     if let Some(branch) = branch {
         fish_print("⟨", "blue");
         fish_print(&branch, "#32a8a8");
         fish_print("|", "blue");
-        fish_print(&new_path_str, "normal");
+        // fish_print(&new_path_str, "normal");
+        fish_print_path(&path);
         fish_print("⟩", "blue");
         fish_done();
     } else {
         fish_print("|", "blue");
-        fish_print(&new_path_str, "normal");
+        // fish_print(&new_path_str, "normal");
+        fish_print_path(&path);
         fish_print("⟩", "blue");
         fish_done();
     }
