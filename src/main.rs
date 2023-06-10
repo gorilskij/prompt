@@ -12,17 +12,46 @@ fn home_path() -> Option<PathBuf> {
         .map(|s| PathBuf::from(s))
 }
 
-fn current_branch() -> Option<String> {
+enum GitBranch {
+    Branch(String),
+    Detached(String),
+}
+
+fn current_branch() -> Option<GitBranch> {
+    // Command::new("git")
+    //     .arg("branch")
+    //     .arg("--show-current")
+    //     .output()
+    //     .ok()
+    //     .and_then(|out| match out.status.success() {
+    //         true => String::from_utf8(out.stdout).ok(),
+    //         false => None,
+    //     })
+    //     .map(|s| s.trim().to_string())
+
+    // git symbolic-ref --short HEAD
     Command::new("git")
-        .arg("branch")
-        .arg("--show-current")
+        .args(["symbolic-ref", "--short", "HEAD"])
         .output()
         .ok()
         .and_then(|out| match out.status.success() {
-            true => String::from_utf8(out.stdout).ok(),
+            true => std::str::from_utf8(&out.stdout)
+                .ok()
+                .map(|s| GitBranch::Branch(s.trim().to_string())),
             false => None,
         })
-        .map(|s| s.trim().to_string())
+        .or_else(|| // git show-ref --head -s --abbrev | head -n1
+            Command::new("git")
+                .args(["show-ref", "--head", "-s", "--abbrev"])
+                .output()
+                .ok()
+                .and_then(|out| match out.status.success() {
+                    true => std::str::from_utf8(&out.stdout)
+                        .ok()
+                        .map(|s|
+                            GitBranch::Detached(s.lines().next().unwrap().trim().to_string())),
+                    false => None,
+                }))
 }
 
 #[derive(Eq, PartialEq, Clone, Debug)]
@@ -99,6 +128,15 @@ fn fish_print(string: &str, color: &str) {
     print!("set_color \"{}\";printf \"{}\";", color, string);
 }
 
+fn fish_print_branch(branch: &GitBranch) {
+    const BRANCH_COLOR: &str = "#32a8a8";
+    const DETACHED_COLOR: &str = "#bdb12f";
+    match branch {
+        GitBranch::Branch(s) => fish_print(s, BRANCH_COLOR),
+        GitBranch::Detached(s) => fish_print(s, DETACHED_COLOR),
+    }
+}
+
 fn fish_print_path(path: &CWDPath) {
     if path.parts.len() == 1 && path.parts[0] == CWDPathPart::RootDir {
         print!("set_color \"normal\";printf \"/\";");
@@ -139,7 +177,7 @@ fn main() {
 
     if let Some(branch) = branch {
         fish_print("⟨", "blue");
-        fish_print(&branch, "#32a8a8");
+        fish_print_branch(&branch);
         fish_print("|", "blue");
         // fish_print(&new_path_str, "normal");
         fish_print_path(&path);
