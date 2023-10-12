@@ -17,41 +17,29 @@ enum GitBranch {
     Detached(String),
 }
 
-fn current_branch() -> Option<GitBranch> {
-    // Command::new("git")
-    //     .arg("branch")
-    //     .arg("--show-current")
-    //     .output()
-    //     .ok()
-    //     .and_then(|out| match out.status.success() {
-    //         true => String::from_utf8(out.stdout).ok(),
-    //         false => None,
-    //     })
-    //     .map(|s| s.trim().to_string())
-
-    // git symbolic-ref --short HEAD
-    Command::new("git")
-        .args(["symbolic-ref", "--short", "HEAD"])
+fn git_command(command: &str, args: &[&str]) -> Option<String> {
+    Command::new(command)
+        .args(args)
         .output()
         .ok()
         .and_then(|out| match out.status.success() {
             true => std::str::from_utf8(&out.stdout)
                 .ok()
-                .map(|s| GitBranch::Branch(s.trim().to_string())),
+                .map(|s| s.trim().to_string()),
             false => None,
         })
-        .or_else(|| // git show-ref --head -s --abbrev | head -n1
-            Command::new("git")
-                .args(["show-ref", "--head", "-s", "--abbrev"])
-                .output()
-                .ok()
-                .and_then(|out| match out.status.success() {
-                    true => std::str::from_utf8(&out.stdout)
-                        .ok()
-                        .map(|s|
-                            GitBranch::Detached(s.lines().next().unwrap().trim().to_string())),
-                    false => None,
-                }))
+}
+
+fn current_branch() -> Option<GitBranch> {
+    // git symbolic-ref --short HEAD
+    git_command("git", &["symbolic-ref", "--short", "HEAD"])
+        .map(|out|
+            GitBranch::Branch(out.trim().to_string()))
+        .or_else(||
+            // git show-ref --head -s --abbrev | head -n1
+            git_command("git", &["show-ref", "--head", "-s", "--abbrev"])
+                .map(|out|
+                    GitBranch::Detached(out.lines().next().unwrap().trim().to_string())))
 }
 
 #[derive(Eq, PartialEq, Clone, Debug)]
@@ -158,36 +146,29 @@ fn fish_done() {
 }
 
 fn main() {
-    let mut path = CWDPath::from(
-        env::current_dir().expect("failed to get current path"));
+    let path = env::current_dir().map(CWDPath::from);
 
-    path.strip_home();
-    path.shorten(1);
+    match path {
+        Ok(mut path) => {
+            path.strip_home();
+            path.shorten(1);
 
-    let branch = current_branch();
+            let branch = current_branch();
 
-    // let symbol_idx = 0;
-    // let _symbol = SYMBOLS
-    //     .chars()
-    //     .nth(symbol_idx)
-    //     .unwrap()
-    //     .to_string();
-
-    // let new_path_str = new_path.as_os_str().to_str().expect("corrupted path");
-
-    if let Some(branch) = branch {
-        fish_print("⟨", "blue");
-        fish_print_branch(&branch);
-        fish_print("|", "blue");
-        // fish_print(&new_path_str, "normal");
-        fish_print_path(&path);
-        fish_print("⟩", "blue");
-        fish_done();
-    } else {
-        fish_print("|", "blue");
-        // fish_print(&new_path_str, "normal");
-        fish_print_path(&path);
-        fish_print("⟩", "blue");
-        fish_done();
+            if let Some(branch) = branch {
+                fish_print("⟨", "blue");
+                fish_print_branch(&branch);
+            }
+            fish_print("|", "blue");
+            fish_print_path(&path);
+            fish_print("⟩", "blue");
+            fish_done();
+        }
+        Err(_err) => {
+            fish_print("|", "blue");
+            fish_print("???", "red");
+            fish_print("⟩", "blue");
+            fish_done();
+        }
     }
 }
