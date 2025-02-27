@@ -1,6 +1,7 @@
 #![feature(iter_intersperse)]
 
 use std::env;
+use std::iter::once;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
@@ -45,34 +46,57 @@ fn current_branch() -> Option<GitBranch> {
 
 #[derive(Eq, PartialEq, Clone, Debug)]
 enum CWDPathPart {
-    RootDir,
-    HomeDir,
+    Root,
+    DoubleRoot,
+    Home,
     Ellipsis,
     Normal(String),
 }
 
+#[derive(Debug)]
 struct CWDPath {
     parts: Vec<CWDPathPart>,
 }
 
-impl<T: AsRef<Path>> From<T> for CWDPath {
-    fn from(path: T) -> Self {
+impl CWDPath {
+    fn from_path<P: AsRef<Path>>(path: P) -> Self {
         let path = path.as_ref();
+
         let parts = path
             .components()
             .map(|comp| match comp {
-                Component::RootDir => CWDPathPart::RootDir,
+                Component::RootDir => CWDPathPart::Root,
                 Component::Normal(s) => {
                     CWDPathPart::Normal(s.to_str().expect("non-utf8 name in path").to_string())
                 }
                 other => panic!("unexpected {other:?} in path"),
             })
             .collect();
+
         Self { parts }
     }
-}
 
-impl CWDPath {
+    fn from_str<S: AsRef<str>>(path: S) -> Self {
+        let path = path.as_ref();
+
+        let first = if path.starts_with("//") {
+            CWDPathPart::DoubleRoot
+        } else {
+            assert!(path.starts_with('/'));
+            CWDPathPart::Root
+        };
+
+        let parts = once(first)
+            .chain(
+                path.split('/')
+                    .filter(|p| !p.is_empty())
+                    .map(|p| CWDPathPart::Normal(p.to_string())),
+            )
+            .collect();
+
+        Self { parts }
+    }
+
     #[must_use]
     fn strip_prefix(&mut self, prefix: &Self) -> bool {
         match self.parts.strip_prefix(prefix.parts.as_slice()) {
@@ -85,9 +109,9 @@ impl CWDPath {
     }
 
     fn strip_home(&mut self) {
-        let home = Self::from(&home_path().expect("failed to get home path"));
+        let home = Self::from_path(home_path().expect("failed to get home path"));
         if self.strip_prefix(&home) {
-            self.parts.insert(0, CWDPathPart::HomeDir);
+            self.parts.insert(0, CWDPathPart::Home);
         }
     }
 
@@ -134,29 +158,42 @@ fn format_branch(branch: &GitBranch, builder: &mut ColoredStringBuilder) {
 }
 
 fn format_path(path: &CWDPath, builder: &mut ColoredStringBuilder) {
-    if path.parts.len() == 1 && path.parts[0] == CWDPathPart::RootDir {
-        builder.push("/".normal());
-    } else {
-        path.parts
+    match &*path.parts {
+        &[CWDPathPart::Root] => {
+            builder.push("/".normal());
+        }
+        &[CWDPathPart::DoubleRoot] => {
+            builder.push("//".normal());
+        }
+        parts => parts
             .iter()
             .map(|part| match part {
-                CWDPathPart::RootDir => "".normal(),
-                CWDPathPart::HomeDir => "~".color("red"),
+                CWDPathPart::Root => "".normal(),
+                CWDPathPart::DoubleRoot => "//".normal(),
+                CWDPathPart::Home => "~".color("red"),
                 CWDPathPart::Ellipsis => "⋯".color("#444"),
                 CWDPathPart::Normal(s) => s.color("green"),
             })
-            .intersperse_with(|| "/".normal())
+            .intersperse("/".normal())
             .for_each(|part| {
                 builder.push(part);
-            });
+            }),
     }
 }
 
 fn main() {
-    let path = env::current_dir().map(CWDPath::from);
+    let path = Command::new("pwd")
+        .output()
+        .ok()
+        .map(|out| out.stdout)
+        .and_then(|chars| {
+            std::str::from_utf8(&chars)
+                .ok()
+                .map(|s| CWDPath::from_str(s.trim()))
+        });
 
     match path {
-        Ok(mut path) => {
+        Some(mut path) => {
             path.strip_home();
             path.shorten(1);
 
@@ -172,7 +209,7 @@ fn main() {
             builder.push("⟩ ".color("blue").bold());
             print!("{}", builder.build());
         }
-        Err(_err) => {
+        None => {
             let s = ColoredStringBuilder::new()
                 .push("|".color("blue").bold())
                 .push("???".color("red"))
