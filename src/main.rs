@@ -1,5 +1,7 @@
 #![feature(iter_intersperse)]
+#![feature(assert_matches)]
 
+use std::assert_matches::assert_matches;
 use std::env;
 use std::iter::once;
 use std::path::{Component, Path, PathBuf};
@@ -49,6 +51,8 @@ enum CWDPathPart {
     Root,
     DoubleRoot,
     Home,
+    // a custom starting directory alias such as ~ for $HOME
+    CustomAlias(String),
     Ellipsis,
     Normal(String),
 }
@@ -98,7 +102,7 @@ impl CWDPath {
     }
 
     #[must_use]
-    fn strip_prefix(&mut self, prefix: &Self) -> bool {
+    fn strip_prefix(&mut self, prefix: &CWDPattern) -> bool {
         match self.parts.strip_prefix(prefix.parts.as_slice()) {
             None => false,
             Some(rest) => {
@@ -108,10 +112,18 @@ impl CWDPath {
         }
     }
 
-    fn strip_home(&mut self) {
-        let home = Self::from_path(home_path().expect("failed to get home path"));
+    // apply the `~` alias along with any custom aliases that are passed (sequentially, in order)
+    fn apply_aliases(&mut self, custom_aliases: &[(CWDPattern, String)]) {
+        let home = Self::from_path(home_path().expect("failed to get home path")).into();
         if self.strip_prefix(&home) {
             self.parts.insert(0, CWDPathPart::Home);
+        }
+
+        for (prefix, alias) in custom_aliases {
+            if self.strip_prefix(prefix) {
+                self.parts
+                    .insert(0, CWDPathPart::CustomAlias(alias.to_string()))
+            }
         }
     }
 
@@ -143,6 +155,45 @@ impl CWDPath {
     }
 }
 
+struct CWDPattern {
+    parts: Vec<CWDPathPart>,
+}
+
+impl CWDPattern {
+    fn from_parts(parts: Vec<CWDPathPart>) -> Self {
+        use CWDPathPart::*;
+
+        assert!(!parts.is_empty(), "`parts` must not be empty");
+        match parts[0] {
+            Root | Home | CustomAlias(_) => {}
+            DoubleRoot => assert_eq!(
+                parts.len(),
+                1,
+                "a pattern starting with `//` cannot contain any more parts"
+            ),
+            _ => {
+                panic!("the first part of a pattern can only be `/`, `//`, `~`, or a custom alias")
+            }
+        }
+        // this also ensures that `...` is not present anywhere in the pattern
+        for part in &parts[1..] {
+            assert_matches!(
+                part,
+                Normal(_),
+                "all parts of a pattern except the first must be normal"
+            );
+        }
+
+        Self { parts }
+    }
+}
+
+impl From<CWDPath> for CWDPattern {
+    fn from(value: CWDPath) -> Self {
+        Self::from_parts(value.parts)
+    }
+}
+
 fn format_branch(branch: &GitBranch, builder: &mut ColoredStringBuilder) {
     // const BRANCH_COLOR: &str = "#32a8a8";
     // const DETACHED_COLOR: &str = "#bdb12f";
@@ -158,21 +209,24 @@ fn format_branch(branch: &GitBranch, builder: &mut ColoredStringBuilder) {
 }
 
 fn format_path(path: &CWDPath, builder: &mut ColoredStringBuilder) {
+    use CWDPathPart::*;
+
     match &*path.parts {
-        &[CWDPathPart::Root] => {
+        &[Root] => {
             builder.push("/".normal());
         }
-        &[CWDPathPart::DoubleRoot] => {
+        &[DoubleRoot] => {
             builder.push("//".normal());
         }
         parts => parts
             .iter()
             .map(|part| match part {
-                CWDPathPart::Root => "".normal(),
-                CWDPathPart::DoubleRoot => "//".normal(),
-                CWDPathPart::Home => "~".color("red"),
-                CWDPathPart::Ellipsis => "⋯".color("#444"),
-                CWDPathPart::Normal(s) => s.color("green"),
+                Root => "".normal(),
+                DoubleRoot => "//".normal(),
+                Home => "~".color("red"),
+                CustomAlias(s) => s.color("#f5c542").bold(),
+                Ellipsis => "⋯".color("#444"),
+                Normal(s) => s.color("green"),
             })
             .intersperse("/".normal())
             .for_each(|part| {
@@ -182,6 +236,21 @@ fn format_path(path: &CWDPath, builder: &mut ColoredStringBuilder) {
 }
 
 fn main() {
+    use CWDPathPart::*;
+
+    // these are applied sequentially, each alias must rely on
+    // the path already having previous aliases applied
+    let custom_aliases = vec![
+        (
+            CWDPattern::from_parts(vec![Home, Normal("code".to_string())]),
+            "c".to_string(),
+        ),
+        (
+            CWDPattern::from_parts(vec![Home, Normal("Desktop".to_string())]),
+            "D".to_string(),
+        ),
+    ];
+
     let path = Command::new("pwd")
         .output()
         .ok()
@@ -194,7 +263,7 @@ fn main() {
 
     match path {
         Some(mut path) => {
-            path.strip_home();
+            path.apply_aliases(&custom_aliases);
             path.shorten(1);
 
             let branch = current_branch();
