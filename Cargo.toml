@@ -6,4 +6,5 @@ edition = "2024"
 [dependencies]
 colored = { path = "/Users/Gorilskij/code/rust/colored" }
 serde = { version = "1.0.219", features = ["derive"] }
+thiserror = "2.0.12"
 toml = "0.8.22"

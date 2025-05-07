@@ -5,6 +5,7 @@ mod config;
 mod git_branch;
 mod path;
 mod python_venv;
+mod tainted;
 mod tests;
 
 use std::env;
@@ -40,9 +41,10 @@ fn format_path(path: &CWDPath, builder: &mut ColoredStringBuilder) {
                 Root => "".normal(),
                 DoubleRoot => "//".normal(),
                 Home => "~".color("red"),
-                CustomAlias(s) => s.color("#f5c542").bold(),
+                PrefixAlias(s) => s.color("#f5c542").bold(),
                 Ellipsis => "⋯".color("#444"),
                 Normal(s) => s.color("green"),
+                Error => "???".color("red"),
             })
             .intersperse("/".normal())
             .for_each(|part| {
@@ -52,7 +54,20 @@ fn format_path(path: &CWDPath, builder: &mut ColoredStringBuilder) {
 }
 
 fn main() {
-    let config = load_config("config.toml");
+    let mut error_occurred = false;
+
+    let config_str = include_str!("../config.toml");
+
+    // TODO: parse config at compile time
+    let config = match Config::from_str(config_str) {
+        Ok(config) => config,
+        err => {
+            error_occurred = true;
+            #[cfg(debug_assertions)]
+            eprintln!("{:?}", err);
+            Default::default()
+        }
+    };
 
     let path = Command::new("pwd")
         .output()
@@ -64,14 +79,22 @@ fn main() {
                 .map(|s| CWDPath::from_str(s.trim()))
         });
 
+    #[cfg(debug_assertions)]
+    eprintln!("path: {:?}", path);
+
     match path {
-        Some(mut path) => {
-            let home = CWDPattern::from_path(home_path().expect("failed to get home path"));
+        Some(path) => {
+            let mut path = untaint!(path, bool error_occurred);
+
+            if let Some(home_path) = home_path() {
+                let home = untaint!(CWDPattern::from_path(home_path), bool error_occurred);
+                path.apply_home_alias(home);
+            } else {
+                error_occurred = true;
+            }
 
             if let Some(aliases) = &config.aliases {
-                path.apply_aliases(home, aliases);
-            } else {
-                path.apply_aliases(home, []);
+                path.apply_aliases(aliases);
             }
 
             path.shorten(1);
@@ -80,6 +103,10 @@ fn main() {
             let branch = current_git_branch();
 
             let builder = &mut ColoredStringBuilder::new();
+
+            if error_occurred {
+                builder.push("!".color("red"));
+            }
 
             const LEFT_SEPARATOR: &str = "|";
             const RIGHT_SPARATOR: &str = "|";

@@ -5,57 +5,87 @@ use std::{
 
 use serde::{Deserialize, Deserializer};
 
+use crate::tainted::Tainted;
+
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub enum CWDPathPart {
     Root,
     DoubleRoot,
     Home,
     // a custom starting directory alias such as ~ for $HOME
-    CustomAlias(String),
+    PrefixAlias(String),
     Ellipsis,
     Normal(String),
+    // an invalid part (such as a non-unicode part)
+    Error,
 }
 
-fn parts_from_path(path: &Path) -> Vec<CWDPathPart> {
+#[derive(Debug)]
+pub struct NonUnicodeTaint;
+
+fn parts_from_path(path: &Path) -> Tainted<Vec<CWDPathPart>, NonUnicodeTaint> {
+    let mut is_non_unicode = false;
+
     let parts = path
         .components()
         .map(|comp| match comp {
             Component::RootDir => CWDPathPart::Root,
-            Component::Normal(s) => {
-                CWDPathPart::Normal(s.to_str().expect("non-utf8 name in path").to_string())
-            }
+            Component::Normal(s) => match s.to_str() {
+                Some(s) => CWDPathPart::Normal(s.to_string()),
+                None => {
+                    is_non_unicode = true;
+                    CWDPathPart::Error
+                }
+            },
             other => panic!("unexpected {other:?} in path"),
         })
         .collect();
 
-    parts
+    Tainted {
+        value: parts,
+        taint: is_non_unicode.then_some(NonUnicodeTaint),
+    }
 }
 
-fn parts_from_str(path: &str) -> Vec<CWDPathPart> {
+#[derive(Debug)]
+pub struct EmptyPartsTaint;
+
+fn parts_from_str(path: &str) -> Tainted<Vec<CWDPathPart>, EmptyPartsTaint> {
     let mut parts = Vec::new();
 
-    let mut iter = path.split('/').peekable();
+    let leading_slashes = path.chars().take(3).take_while(|c| *c == '/').count();
+    match leading_slashes {
+        0 => {}
+        1 => parts.push(CWDPathPart::Root),
+        2 => parts.push(CWDPathPart::DoubleRoot),
+        _ => todo!("error"),
+    }
 
-    if iter.peek().is_some_and(|part| part.is_empty()) {
-        iter.next();
-        if iter.peek().is_some_and(|part| part.is_empty()) {
+    let path = path.split_at(leading_slashes).1;
+
+    let mut has_empty_parts = false;
+    if !path.is_empty() {
+        let mut iter = path.split("/").peekable();
+
+        if iter.peek() == Some(&"~") && leading_slashes == 0 {
             iter.next();
-            parts.push(CWDPathPart::DoubleRoot);
-        } else {
-            parts.push(CWDPathPart::Root);
+            parts.push(CWDPathPart::Home);
         }
-    } else if iter.peek() == Some(&"~") {
-        iter.next();
-        parts.push(CWDPathPart::Home);
+
+        while let Some(part) = iter.next() {
+            if part.is_empty() && iter.peek() != None {
+                has_empty_parts = true;
+                parts.push(CWDPathPart::Error)
+            } else {
+                parts.push(CWDPathPart::Normal(part.to_string()))
+            }
+        }
     }
 
-    for part in iter {
-        // TODO: error handling
-        assert!(!part.is_empty());
-        parts.push(CWDPathPart::Normal(part.to_string()))
+    Tainted {
+        value: parts,
+        taint: has_empty_parts.then_some(EmptyPartsTaint),
     }
-
-    parts
 }
 
 #[derive(Debug)]
@@ -64,15 +94,8 @@ pub struct CWDPath {
 }
 
 impl CWDPath {
-    pub fn from_str<S: AsRef<str>>(path: S) -> Self {
-        let parts = parts_from_str(path.as_ref());
-
-        assert_matches!(
-            parts.get(0),
-            Some(CWDPathPart::Root | CWDPathPart::DoubleRoot)
-        );
-
-        Self { parts }
+    pub fn from_str<S: AsRef<str>>(path: S) -> Tainted<Self, EmptyPartsTaint> {
+        parts_from_str(path.as_ref()).map(|parts| Self { parts })
     }
 
     pub fn parts(&self) -> &[CWDPathPart] {
@@ -90,19 +113,22 @@ impl CWDPath {
         }
     }
 
-    // apply the `~` alias along with any custom aliases that are passed (sequentially, in order)
-    pub fn apply_aliases<'a, I>(&mut self, home: CWDPattern, aliases: I)
-    where
-        I: IntoIterator<Item = (&'a String, &'a CWDPattern)>,
-    {
+    // apply the `~` alias
+    pub fn apply_home_alias(&mut self, home: CWDPattern) {
         if self.strip_prefix(&home) {
             self.parts.insert(0, CWDPathPart::Home);
         }
+    }
 
+    // apply custom aliases (sequentially, in order)
+    pub fn apply_aliases<'a, I>(&mut self, aliases: I)
+    where
+        I: IntoIterator<Item = (&'a String, &'a CWDPattern)>,
+    {
         for (alias, prefix) in aliases.into_iter() {
             if self.strip_prefix(prefix) {
                 self.parts
-                    .insert(0, CWDPathPart::CustomAlias(alias.to_string()))
+                    .insert(0, CWDPathPart::PrefixAlias(alias.to_string()))
             }
         }
     }
@@ -144,7 +170,11 @@ pub struct CWDPattern {
 impl<'de> Deserialize<'de> for CWDPattern {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s: String = Deserialize::deserialize(deserializer)?;
-        Ok(CWDPattern::from_str(s))
+        let tainted = CWDPattern::from_str(s);
+        match tainted.taint {
+            Some(EmptyPartsTaint) => Err(serde::de::Error::custom("empty parts in pattern")),
+            None => Ok(tainted.value),
+        }
     }
 }
 
@@ -154,7 +184,7 @@ impl CWDPattern {
 
         assert!(!parts.is_empty(), "`parts` must not be empty");
         match parts[0] {
-            Root | Home | CustomAlias(_) => {}
+            Root | Home | PrefixAlias(_) => {}
             DoubleRoot => assert_eq!(
                 parts.len(),
                 1,
@@ -176,12 +206,12 @@ impl CWDPattern {
         Self { parts }
     }
 
-    fn from_str<S: AsRef<str>>(path: S) -> Self {
-        Self::from_parts(parts_from_str(path.as_ref()))
+    fn from_str<S: AsRef<str>>(path: S) -> Tainted<Self, EmptyPartsTaint> {
+        parts_from_str(path.as_ref()).map(|parts| Self::from_parts(parts))
     }
 
-    pub fn from_path<P: AsRef<Path>>(path: P) -> Self {
-        Self::from_parts(parts_from_path(path.as_ref()))
+    pub fn from_path<P: AsRef<Path>>(path: P) -> Tainted<Self, NonUnicodeTaint> {
+        parts_from_path(path.as_ref()).map(Self::from_parts)
     }
 }
 
