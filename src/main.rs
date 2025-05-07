@@ -1,5 +1,6 @@
 #![feature(iter_intersperse)]
 #![feature(assert_matches)]
+#![feature(try_blocks)]
 
 mod config;
 mod git_branch;
@@ -7,22 +8,17 @@ mod path;
 mod python_venv;
 mod tainted;
 
-use std::env;
-use std::path::PathBuf;
-use std::process::Command;
+use std::{error::Error, fs, io, process::Command};
 
 use colored::*;
 
 use config::*;
+use dirs::home_dir;
 use git_branch::*;
 use path::*;
 use python_venv::*;
 
 // const SYMBOLS: &str = "⌘ⵞⵘⵙⴲⴵⵥꙮ◬✡⚛☸❀❁ꔮ❃ꕤꖛꖜꗝ";
-
-fn home_path() -> Option<PathBuf> {
-    env::var("HOME").ok().map(PathBuf::from)
-}
 
 fn format_path(path: &CWDPath, builder: &mut ColoredStringBuilder) {
     use CWDPathPart::*;
@@ -55,15 +51,44 @@ fn format_path(path: &CWDPath, builder: &mut ColoredStringBuilder) {
 fn main() {
     let mut error_occurred = false;
 
-    let config_str = include_str!("../config.toml");
+    let home = home_dir();
+    if home.is_none() {
+        #[cfg(debug_assertions)]
+        eprintln!("no home directory");
+    }
 
-    // TODO: parse config at compile time
-    let config = match Config::from_str(config_str) {
+    #[cfg(debug_assertions)]
+    println!("home path: {:?}", home);
+
+    let config: Result<Config, Box<dyn Error>> = try {
+        if let Some(mut config_path) = home {
+            config_path.push(".config/prompt/config.toml");
+
+            #[cfg(debug_assertions)]
+            println!("config path: {:?}", config_path);
+
+            if fs::exists(&config_path)? {
+                #[cfg(debug_assertions)]
+                println!("config file exists");
+
+                let config_str = fs::read_to_string(config_path)?;
+                Config::from_str(&config_str)?
+            } else {
+                #[cfg(debug_assertions)]
+                println!("config file does not exist");
+
+                Default::default()
+            }
+        } else {
+            Default::default()
+        }
+    };
+    let config = match config {
         Ok(config) => config,
-        _err => {
+        Err(err) => {
             error_occurred = true;
             #[cfg(debug_assertions)]
-            eprintln!("{:?}", _err);
+            println!("{:?}", err);
             Default::default()
         }
     };
@@ -84,7 +109,7 @@ fn main() {
     let path = path.map(|path| {
         let mut path = untaint!(path, bool error_occurred);
 
-        if let Some(home_path) = home_path() {
+        if let Some(home_path) = home_dir() {
             let home = untaint!(CWDPattern::from_path(home_path), bool error_occurred);
             path.apply_home_alias(home);
         } else {

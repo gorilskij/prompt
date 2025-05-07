@@ -103,8 +103,33 @@ pub struct CWDPath {
 }
 
 impl CWDPath {
+    fn from_parts(parts: Vec<CWDPathPart>) -> Self {
+        use CWDPathPart::*;
+
+        assert!(!parts.is_empty(), "`parts` must not be empty");
+        match parts[0] {
+            Root | DoubleRoot | Home | PrefixAlias(_) | Error => {}
+            _ => {
+                panic!("the first part of a pattern can only be `/`, `//`, `~`, or a custom alias")
+            }
+        }
+
+        for part in &parts[1..] {
+            assert!(
+                !matches!(part, Root | DoubleRoot | Home | PrefixAlias(_)),
+                "`/`, `//`, `~`, or a custom alias cannot occur in the middle of a path",
+            );
+        }
+
+        Self { parts }
+    }
+
     pub fn from_str<S: AsRef<str>>(path: S) -> Tainted<Self, EmptyPartsTaint> {
-        parts_from_str(path.as_ref()).map(|parts| Self { parts })
+        parts_from_str(path.as_ref()).map(Self::from_parts)
+    }
+
+    pub fn from_path<P: AsRef<Path>>(path: P) -> Tainted<Self, PathParsingTaint> {
+        parts_from_path(path.as_ref()).map(Self::from_parts)
     }
 
     pub fn parts(&self) -> &[CWDPathPart] {
