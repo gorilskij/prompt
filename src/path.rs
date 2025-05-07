@@ -21,10 +21,16 @@ pub enum CWDPathPart {
 }
 
 #[derive(Debug)]
-pub struct NonUnicodeTaint;
+pub struct PathParsingTaint {
+    non_unicode: bool,
+    unexpected_parts: Vec<String>,
+}
 
-fn parts_from_path(path: &Path) -> Tainted<Vec<CWDPathPart>, NonUnicodeTaint> {
-    let mut is_non_unicode = false;
+fn parts_from_path(path: &Path) -> Tainted<Vec<CWDPathPart>, PathParsingTaint> {
+    let mut taint = PathParsingTaint {
+        non_unicode: false,
+        unexpected_parts: vec![],
+    };
 
     let parts = path
         .components()
@@ -33,17 +39,20 @@ fn parts_from_path(path: &Path) -> Tainted<Vec<CWDPathPart>, NonUnicodeTaint> {
             Component::Normal(s) => match s.to_str() {
                 Some(s) => CWDPathPart::Normal(s.to_string()),
                 None => {
-                    is_non_unicode = true;
+                    taint.non_unicode = true;
                     CWDPathPart::Error
                 }
             },
-            other => panic!("unexpected {other:?} in path"),
+            unexpected => {
+                taint.unexpected_parts.push(format!("{:?}", unexpected));
+                CWDPathPart::Error
+            }
         })
         .collect();
 
     Tainted {
         value: parts,
-        taint: is_non_unicode.then_some(NonUnicodeTaint),
+        taint: (taint.non_unicode || !taint.unexpected_parts.is_empty()).then_some(taint),
     }
 }
 
@@ -184,12 +193,7 @@ impl CWDPattern {
 
         assert!(!parts.is_empty(), "`parts` must not be empty");
         match parts[0] {
-            Root | Home | PrefixAlias(_) => {}
-            DoubleRoot => assert_eq!(
-                parts.len(),
-                1,
-                "a pattern starting with `//` cannot contain any more parts"
-            ),
+            Root | DoubleRoot | Home | PrefixAlias(_) => {}
             _ => {
                 panic!("the first part of a pattern can only be `/`, `//`, `~`, or a custom alias")
             }
@@ -210,7 +214,7 @@ impl CWDPattern {
         parts_from_str(path.as_ref()).map(|parts| Self::from_parts(parts))
     }
 
-    pub fn from_path<P: AsRef<Path>>(path: P) -> Tainted<Self, NonUnicodeTaint> {
+    pub fn from_path<P: AsRef<Path>>(path: P) -> Tainted<Self, PathParsingTaint> {
         parts_from_path(path.as_ref()).map(Self::from_parts)
     }
 }
@@ -218,5 +222,24 @@ impl CWDPattern {
 impl From<CWDPath> for CWDPattern {
     fn from(value: CWDPath) -> Self {
         Self::from_parts(value.parts)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_shorten() {
+        use crate::{CWDPath, CWDPathPart};
+
+        let path = CWDPath::from_str("/tmp");
+
+        assert!(path.taint.is_none());
+        let mut path = path.value;
+
+        path.shorten(0);
+        assert_eq!(
+            path.parts,
+            vec![CWDPathPart::Root, CWDPathPart::Normal("tmp".to_string())]
+        )
     }
 }

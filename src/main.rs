@@ -6,7 +6,6 @@ mod git_branch;
 mod path;
 mod python_venv;
 mod tainted;
-mod tests;
 
 use std::env;
 use std::path::PathBuf;
