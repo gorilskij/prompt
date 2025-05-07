@@ -60,10 +60,10 @@ fn main() {
     // TODO: parse config at compile time
     let config = match Config::from_str(config_str) {
         Ok(config) => config,
-        err => {
+        _err => {
             error_occurred = true;
             #[cfg(debug_assertions)]
-            eprintln!("{:?}", err);
+            eprintln!("{:?}", _err);
             Default::default()
         }
     };
@@ -81,75 +81,61 @@ fn main() {
     #[cfg(debug_assertions)]
     eprintln!("path: {:?}", path);
 
-    match path {
-        Some(path) => {
-            let mut path = untaint!(path, bool error_occurred);
+    let path = path.map(|path| {
+        let mut path = untaint!(path, bool error_occurred);
 
-            if let Some(home_path) = home_path() {
-                let home = untaint!(CWDPattern::from_path(home_path), bool error_occurred);
-                path.apply_home_alias(home);
-            } else {
-                error_occurred = true;
-            }
-
-            if let Some(aliases) = &config.aliases {
-                path.apply_aliases(aliases);
-            }
-
-            path.shorten(1);
-
-            let venv = current_python_venv();
-            let branch = current_git_branch();
-
-            let builder = &mut ColoredStringBuilder::new();
-
-            if error_occurred {
-                builder.push("!".color("red"));
-            }
-
-            const LEFT_SEPARATOR: &str = "|";
-            const RIGHT_SPARATOR: &str = "|";
-
-            match (venv, branch) {
-                (Some(venv), Some(branch)) => {
-                    builder.push("⟨".color("blue").bold());
-                    format_python_venv(&venv, builder);
-                    builder.push(LEFT_SEPARATOR.color("blue").bold());
-                    format_git_branch(&branch, builder);
-                    builder.push(RIGHT_SPARATOR.color("blue").bold());
-                    format_path(&path, builder);
-                    builder.push("⟩ ".color("blue").bold());
-                }
-                (Some(venv), None) => {
-                    builder.push("⟨".color("blue").bold());
-                    format_python_venv(&venv, builder);
-                    builder.push(RIGHT_SPARATOR.color("blue").bold());
-                    format_path(&path, builder);
-                    builder.push("⟩ ".color("blue").bold());
-                }
-                (None, Some(branch)) => {
-                    builder.push("⟨".color("blue").bold());
-                    format_git_branch(&branch, builder);
-                    builder.push(RIGHT_SPARATOR.color("blue").bold());
-                    format_path(&path, builder);
-                    builder.push("⟩ ".color("blue").bold());
-                }
-                (None, None) => {
-                    builder.push(LEFT_SEPARATOR.color("blue").bold());
-                    format_path(&path, builder);
-                    builder.push("⟩ ".color("blue").bold());
-                }
-            }
-
-            print!("{}", builder.build());
+        if let Some(home_path) = home_path() {
+            let home = untaint!(CWDPattern::from_path(home_path), bool error_occurred);
+            path.apply_home_alias(home);
+        } else {
+            error_occurred = true;
         }
-        None => {
-            let s = ColoredStringBuilder::new()
-                .push("|".color("blue").bold())
-                .push("???".color("red"))
-                .push("⟩ ".color("blue").bold())
-                .build();
-            print!("{s}");
+
+        if let Some(aliases) = &config.aliases {
+            path.apply_aliases(aliases);
         }
+
+        path.shorten(1);
+
+        path
+    });
+
+    let venv = current_python_venv();
+    let branch = current_git_branch();
+
+    let builder = &mut ColoredStringBuilder::new();
+
+    if error_occurred {
+        builder.push("!".color("red"));
     }
+
+    const LEFT_DELIMITER: &str = "⟨";
+    const SEPARATOR: &str = "|";
+    const RIGHT_DELIMITER: &str = "⟩ ";
+
+    if venv.is_none() && branch.is_none() {
+        builder.push(SEPARATOR.color("blue").bold());
+    } else {
+        builder.push(LEFT_DELIMITER.color("blue").bold());
+    }
+
+    if let Some(venv) = venv {
+        format_python_venv(&venv, builder);
+        builder.push(SEPARATOR.color("blue").bold());
+    }
+
+    if let Some(branch) = branch {
+        format_git_branch(&branch, builder);
+        builder.push(SEPARATOR.color("blue").bold());
+    }
+
+    if let Some(path) = path {
+        format_path(&path, builder);
+    } else {
+        builder.push("???".color("red"));
+    }
+
+    builder.push(RIGHT_DELIMITER.color("blue").bold());
+
+    print!("{}", builder.build());
 }

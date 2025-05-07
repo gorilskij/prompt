@@ -19,10 +19,10 @@ impl<T, Taint: Debug> Tainted<T, Taint> {
 macro_rules! untaint {
     ($val:expr, bool $error_var:ident) => {{
         let tainted = $val;
-        if let Some(taint) = tainted.taint {
+        if let Some(_taint) = tainted.taint {
             $error_var = true;
             #[cfg(debug_assertions)]
-            eprintln!("taint: {:?}", taint)
+            eprintln!("taint: {:?}", _taint)
         }
         tainted.value
     }};

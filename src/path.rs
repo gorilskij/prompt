@@ -82,7 +82,7 @@ fn parts_from_str(path: &str) -> Tainted<Vec<CWDPathPart>, EmptyPartsTaint> {
         }
 
         while let Some(part) = iter.next() {
-            if part.is_empty() && iter.peek() != None {
+            if part.is_empty() && iter.peek().is_some() {
                 has_empty_parts = true;
                 parts.push(CWDPathPart::Error)
             } else {
@@ -211,7 +211,7 @@ impl CWDPattern {
     }
 
     fn from_str<S: AsRef<str>>(path: S) -> Tainted<Self, EmptyPartsTaint> {
-        parts_from_str(path.as_ref()).map(|parts| Self::from_parts(parts))
+        parts_from_str(path.as_ref()).map(Self::from_parts)
     }
 
     pub fn from_path<P: AsRef<Path>>(path: P) -> Tainted<Self, PathParsingTaint> {
