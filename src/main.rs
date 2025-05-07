@@ -2,13 +2,14 @@
 #![feature(assert_matches)]
 
 use std::assert_matches::assert_matches;
-use std::env;
+use std::collections::HashMap;
 use std::ffi::OsString;
-use std::iter::once;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::{env, fs};
 
 use colored::*;
+use serde::{Deserialize, Deserializer};
 
 mod tests;
 
@@ -76,6 +77,33 @@ struct CWDPath {
     parts: Vec<CWDPathPart>,
 }
 
+fn parts_from_str(path: &str) -> Vec<CWDPathPart> {
+    let mut parts = Vec::new();
+
+    let mut iter = path.split('/').peekable();
+
+    if iter.peek().is_some_and(|part| part.is_empty()) {
+        iter.next();
+        if iter.peek().is_some_and(|part| part.is_empty()) {
+            iter.next();
+            parts.push(CWDPathPart::DoubleRoot);
+        } else {
+            parts.push(CWDPathPart::Root);
+        }
+    } else if iter.peek() == Some(&"~") {
+        iter.next();
+        parts.push(CWDPathPart::Home);
+    }
+
+    for part in iter {
+        // TODO: error handling
+        assert!(!part.is_empty());
+        parts.push(CWDPathPart::Normal(part.to_string()))
+    }
+
+    parts
+}
+
 impl CWDPath {
     fn from_path<P: AsRef<Path>>(path: P) -> Self {
         let path = path.as_ref();
@@ -95,22 +123,12 @@ impl CWDPath {
     }
 
     fn from_str<S: AsRef<str>>(path: S) -> Self {
-        let path = path.as_ref();
+        let parts = parts_from_str(path.as_ref());
 
-        let first = if path.starts_with("//") {
-            CWDPathPart::DoubleRoot
-        } else {
-            assert!(path.starts_with('/'));
-            CWDPathPart::Root
-        };
-
-        let parts = once(first)
-            .chain(
-                path.split('/')
-                    .filter(|p| !p.is_empty())
-                    .map(|p| CWDPathPart::Normal(p.to_string())),
-            )
-            .collect();
+        assert_matches!(
+            parts.get(0),
+            Some(CWDPathPart::Root | CWDPathPart::DoubleRoot)
+        );
 
         Self { parts }
     }
@@ -127,13 +145,16 @@ impl CWDPath {
     }
 
     // apply the `~` alias along with any custom aliases that are passed (sequentially, in order)
-    fn apply_aliases(&mut self, custom_aliases: &[(CWDPattern, String)]) {
+    fn apply_aliases<'a, I>(&mut self, custom_aliases: I)
+    where
+        I: IntoIterator<Item = (&'a String, &'a CWDPattern)>,
+    {
         let home = Self::from_path(home_path().expect("failed to get home path")).into();
         if self.strip_prefix(&home) {
             self.parts.insert(0, CWDPathPart::Home);
         }
 
-        for (prefix, alias) in custom_aliases {
+        for (alias, prefix) in custom_aliases.into_iter() {
             if self.strip_prefix(prefix) {
                 self.parts
                     .insert(0, CWDPathPart::CustomAlias(alias.to_string()))
@@ -169,8 +190,16 @@ impl CWDPath {
     }
 }
 
+#[derive(Debug)]
 struct CWDPattern {
     parts: Vec<CWDPathPart>,
+}
+
+impl<'de> Deserialize<'de> for CWDPattern {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s: String = Deserialize::deserialize(deserializer)?;
+        Ok(CWDPattern::from_str(s))
+    }
 }
 
 impl CWDPattern {
@@ -199,6 +228,11 @@ impl CWDPattern {
         }
 
         Self { parts }
+    }
+
+    fn from_str<S: AsRef<str>>(path: S) -> Self {
+        let parts = parts_from_str(path.as_ref());
+        Self::from_parts(parts)
     }
 }
 
@@ -259,21 +293,25 @@ fn format_path(path: &CWDPath, builder: &mut ColoredStringBuilder) {
     }
 }
 
-fn main() {
-    use CWDPathPart::*;
-
-    // these are applied sequentially, each alias must rely on
+#[derive(Deserialize, Default, Debug)]
+struct Config {
+    // Aliases are applied sequentially, each alias must rely on
     // the path already having previous aliases applied
-    let custom_aliases = vec![
-        (
-            CWDPattern::from_parts(vec![Home, Normal("code".to_string())]),
-            "c".to_string(),
-        ),
-        (
-            CWDPattern::from_parts(vec![Home, Normal("Desktop".to_string())]),
-            "D".to_string(),
-        ),
-    ];
+    aliases: Option<HashMap<String, CWDPattern>>,
+}
+
+fn load_config(path: impl AsRef<Path>) -> Config {
+    let Ok(config_str) = fs::read_to_string(path) else {
+        return Default::default();
+    };
+    let Ok(config) = toml::from_str(&config_str) else {
+        return Default::default();
+    };
+    config
+}
+
+fn main() {
+    let config = load_config("config.toml");
 
     let path = Command::new("pwd")
         .output()
@@ -287,7 +325,9 @@ fn main() {
 
     match path {
         Some(mut path) => {
-            path.apply_aliases(&custom_aliases);
+            if let Some(aliases) = &config.aliases {
+                path.apply_aliases(aliases);
+            }
             path.shorten(1);
 
             let venv = current_python_venv();
