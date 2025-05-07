@@ -3,6 +3,7 @@
 
 use std::assert_matches::assert_matches;
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::{env, fs};
@@ -16,6 +17,19 @@ mod tests;
 
 fn home_path() -> Option<PathBuf> {
     env::var("HOME").ok().map(PathBuf::from)
+}
+
+enum PythonVenv {
+    Normal(String),
+    NotUnicode(OsString),
+}
+
+fn current_python_venv() -> Option<PythonVenv> {
+    match env::var("VIRTUAL_ENV_PROMPT") {
+        Ok(s) => Some(PythonVenv::Normal(s)),
+        Err(env::VarError::NotUnicode(s)) => Some(PythonVenv::NotUnicode(s)),
+        Err(env::VarError::NotPresent) => None,
+    }
 }
 
 enum GitBranch {
@@ -228,12 +242,22 @@ impl From<CWDPath> for CWDPattern {
     }
 }
 
-fn format_branch(branch: &GitBranch, builder: &mut ColoredStringBuilder) {
-    // const BRANCH_COLOR: &str = "#32a8a8";
-    // const DETACHED_COLOR: &str = "#bdb12f";
+fn format_python_venv(venv: &PythonVenv, builder: &mut ColoredStringBuilder) {
+    const PYTHON_VENV_COLOR: &str = "#4b8bbe";
 
-    const BRANCH_COLOR: &str = "cyan";
-    const DETACHED_COLOR: &str = "yellow";
+    match venv {
+        PythonVenv::Normal(s) => builder.push(s.color(PYTHON_VENV_COLOR)),
+        // TODO: implement a solution
+        PythonVenv::NotUnicode(_s) => builder.push("<non-unicode>".color("red")),
+    };
+}
+
+fn format_branch(branch: &GitBranch, builder: &mut ColoredStringBuilder) {
+    // const BRANCH_COLOR: &str = "cyan";
+    // const BRANCH_COLOR: &str = "#ac51b8";
+    const BRANCH_COLOR: &str = "#9d4ac4";
+    // const BRANCH_COLOR: &str = "#da8534";
+    const DETACHED_COLOR: &str = "#bdb12f";
 
     let cs = match branch {
         GitBranch::Branch(s) => s.color(BRANCH_COLOR),
@@ -306,16 +330,45 @@ fn main() {
             }
             path.shorten(1);
 
+            let venv = current_python_venv();
             let branch = current_branch();
 
             let builder = &mut ColoredStringBuilder::new();
-            if let Some(branch) = branch {
-                builder.push("⟨".color("blue").bold());
-                format_branch(&branch, builder);
+
+            const LEFT_SEPARATOR: &str = "|";
+            const RIGHT_SPARATOR: &str = "|";
+
+            match (venv, branch) {
+                (Some(venv), Some(branch)) => {
+                    builder.push("⟨".color("blue").bold());
+                    format_python_venv(&venv, builder);
+                    builder.push(LEFT_SEPARATOR.color("blue").bold());
+                    format_branch(&branch, builder);
+                    builder.push(RIGHT_SPARATOR.color("blue").bold());
+                    format_path(&path, builder);
+                    builder.push("⟩ ".color("blue").bold());
+                }
+                (Some(venv), None) => {
+                    builder.push("⟨".color("blue").bold());
+                    format_python_venv(&venv, builder);
+                    builder.push(RIGHT_SPARATOR.color("blue").bold());
+                    format_path(&path, builder);
+                    builder.push("⟩ ".color("blue").bold());
+                }
+                (None, Some(branch)) => {
+                    builder.push("⟨".color("blue").bold());
+                    format_branch(&branch, builder);
+                    builder.push(RIGHT_SPARATOR.color("blue").bold());
+                    format_path(&path, builder);
+                    builder.push("⟩ ".color("blue").bold());
+                }
+                (None, None) => {
+                    builder.push(LEFT_SEPARATOR.color("blue").bold());
+                    format_path(&path, builder);
+                    builder.push("⟩ ".color("blue").bold());
+                }
             }
-            builder.push("|".color("blue").bold());
-            format_path(&path, builder);
-            builder.push("⟩ ".color("blue").bold());
+
             print!("{}", builder.build());
         }
         None => {
