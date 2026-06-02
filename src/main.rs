@@ -1,5 +1,4 @@
 #![feature(iter_intersperse)]
-#![feature(assert_matches)]
 #![feature(try_blocks)]
 
 mod config;
@@ -8,7 +7,7 @@ mod path;
 mod python_venv;
 mod tainted;
 
-use std::{error::Error, fs, io, process::Command};
+use std::{error::Error, fs};
 
 use colored::*;
 
@@ -67,12 +66,13 @@ fn main() {
             #[cfg(debug_assertions)]
             println!("config path: {:?}", config_path);
 
-            if fs::exists(&config_path)? {
+            if fs::exists(&config_path).map_err(|e| Box::new(e) as Box<dyn Error>)? {
                 #[cfg(debug_assertions)]
                 println!("config file exists");
 
-                let config_str = fs::read_to_string(config_path)?;
-                Config::from_str(&config_str)?
+                let config_str =
+                    fs::read_to_string(config_path).map_err(|e| Box::new(e) as Box<dyn Error>)?;
+                Config::from_str(&config_str).map_err(|e| Box::new(e) as Box<dyn Error>)?
             } else {
                 #[cfg(debug_assertions)]
                 println!("config file does not exist");
@@ -93,15 +93,9 @@ fn main() {
         }
     };
 
-    let path = Command::new("pwd")
-        .output()
+    let path = std::env::var("PWD")
         .ok()
-        .map(|out| out.stdout)
-        .and_then(|chars| {
-            std::str::from_utf8(&chars)
-                .ok()
-                .map(|s| CWDPath::from_str(s.trim()))
-        });
+        .map(|s| CWDPath::from_str(s.trim()));
 
     #[cfg(debug_assertions)]
     eprintln!("path: {:?}", path);

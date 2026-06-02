@@ -1,7 +1,5 @@
-use std::{
-    assert_matches::assert_matches,
-    path::{Component, Path},
-};
+use std::assert_matches;
+use std::path::{Component, Path};
 
 use serde::{Deserialize, Deserializer};
 

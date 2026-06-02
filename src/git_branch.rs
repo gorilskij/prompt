@@ -1,4 +1,8 @@
-use std::process::Command;
+use std::{
+    env,
+    fs,
+    path::PathBuf,
+};
 
 use colored::{ColoredStringBuilder, Colorize};
 
@@ -7,28 +11,31 @@ pub enum GitBranch {
     Detached(String),
 }
 
-fn git_command(command: &str, args: &[&str]) -> Option<String> {
-    Command::new(command)
-        .args(args)
-        .output()
-        .ok()
-        .and_then(|out| match out.status.success() {
-            true => std::str::from_utf8(&out.stdout)
-                .ok()
-                .map(|s| s.trim().to_string()),
-            false => None,
-        })
+fn find_git_dir() -> Option<PathBuf> {
+    let mut dir = env::var("PWD").ok().map(PathBuf::from)?;
+    loop {
+        let candidate = dir.join(".git");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
 }
 
 pub fn current_git_branch() -> Option<GitBranch> {
-    // git symbolic-ref --short HEAD
-    git_command("git", &["symbolic-ref", "--short", "HEAD"])
-        .map(|out| GitBranch::Branch(out.trim().to_string()))
-        .or_else(||
-            // git show-ref --head -s --abbrev | head -n1
-            git_command("git", &["show-ref", "--head", "-s", "--abbrev"])
-                .map(|out|
-                    GitBranch::Detached(out.lines().next().unwrap().trim().to_string())))
+    let git_dir = find_git_dir()?;
+    let head = fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let head = head.trim();
+
+    if let Some(branch) = head.strip_prefix("ref: refs/heads/") {
+        Some(GitBranch::Branch(branch.to_string()))
+    } else {
+        // detached HEAD — abbreviate to 7 chars like git does
+        let hash = &head[..head.len().min(7)];
+        Some(GitBranch::Detached(hash.to_string()))
+    }
 }
 
 pub fn format_git_branch(branch: &GitBranch, builder: &mut ColoredStringBuilder) {
