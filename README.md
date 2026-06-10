@@ -16,11 +16,6 @@ brew install gorilskij/tap/gprompt
 npm install -g gprompt
 ```
 
-### cargo
-
-```sh
-cargo install gprompt
-```
 
 ### Build from source
 
