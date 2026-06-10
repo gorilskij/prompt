@@ -1,6 +1,7 @@
 #![feature(iter_intersperse)]
 #![feature(try_blocks)]
 
+mod colored_builder;
 mod config;
 mod git_branch;
 mod path;
@@ -9,15 +10,26 @@ mod tainted;
 
 use std::{error::Error, fs};
 
-use colored::*;
+use colored::Colorize;
 
+use colored_builder::ColoredStringBuilder;
 use config::*;
 use dirs::home_dir;
 use git_branch::*;
 use path::*;
 use python_venv::*;
 
-// const SYMBOLS: &str = "⌘ⵞⵘⵙⴲⴵⵥꙮ◬✡⚛☸❀❁ꔮ❃ꕤꖛꖜꗝ";
+fn print_init(shell: &str) {
+    match shell {
+        "fish" => print!("function fish_prompt\n    prompt\nend\n"),
+        "bash" => print!("PROMPT_COMMAND='PS1=\"$(prompt)\"'\n"),
+        "zsh" => print!("precmd() {{ PROMPT=\"$(prompt)\" }}\n"),
+        _ => {
+            eprintln!("Usage: prompt init <fish|bash|zsh>");
+            std::process::exit(1);
+        }
+    }
+}
 
 fn format_path(path: &CWDPath, builder: &mut ColoredStringBuilder) {
     use CWDPathPart::*;
@@ -48,6 +60,17 @@ fn format_path(path: &CWDPath, builder: &mut ColoredStringBuilder) {
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() >= 2 && args[1] == "init" {
+        let shell = args.get(2).map(|s| s.as_str()).unwrap_or("");
+        print_init(shell);
+        return;
+    }
+
+    // The shell captures prompt output via a pipe, which makes colored think
+    // it's not a TTY and strips ANSI codes. Force colors on unconditionally.
+    colored::control::set_override(true);
+
     let mut error_occurred = false;
 
     let home = home_dir();

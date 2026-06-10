@@ -1,6 +1,8 @@
 use std::{env, ffi::OsString};
 
-use colored::{ColoredStringBuilder, Colorize};
+use colored::Colorize;
+
+use crate::colored_builder::ColoredStringBuilder;
 
 pub enum PythonVenv {
     Normal(String),
