@@ -1,6 +1,6 @@
 [package]
 name = "gprompt"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "A fast, configurable shell prompt with git-state detection"
 license = "MIT"

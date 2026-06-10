@@ -21,9 +21,9 @@ use python_venv::*;
 
 fn print_init(shell: &str) {
     match shell {
-        "fish" => print!("function fish_prompt\n    gprompt\nend\n"),
-        "bash" => print!("PROMPT_COMMAND='PS1=\"$(gprompt)\"'\n"),
-        "zsh" => print!("precmd() {{ PROMPT=\"$(gprompt)\" }}\n"),
+        "fish" => print!("# gprompt\nset -x VIRTUAL_ENV_DISABLE_PROMPT 1\nfunction fish_prompt\n    gprompt\nend\n"),
+        "bash" => print!("# gprompt\nexport VIRTUAL_ENV_DISABLE_PROMPT=1\nPROMPT_COMMAND='PS1=\"$(gprompt)\"'\n"),
+        "zsh" => print!("# gprompt\nexport VIRTUAL_ENV_DISABLE_PROMPT=1\nprecmd() {{ PROMPT=\"$(gprompt)\" }}\n"),
         _ => {
             eprintln!("Usage: prompt init <fish|bash|zsh>");
             std::process::exit(1);
