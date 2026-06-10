@@ -62,6 +62,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gprompt"
+version = "0.1.0"
+dependencies = [
+ "colored",
+ "dirs",
+ "serde",
+ "toml",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.15.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -112,16 +122,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "02b3e5e68a3a1a02aad3ec490a98007cbc13c37cbe84a3cd7b8e406d76e7f778"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "prompt"
-version = "0.1.0"
-dependencies = [
- "colored",
- "dirs",
- "serde",
- "toml",
 ]
 
 [[package]]
